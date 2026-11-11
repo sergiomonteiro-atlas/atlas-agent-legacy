@@ -1,0 +1,19 @@
+{
+  "name": "@atlas-si/agent",
+  "version": "0.1.0",
+  "description": "Atlas-Agent OS — local-first AI-Native harness, Markdown brain and conversational gateway",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": { "atlas": "dist/cli.js" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "node --import tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "check": "tsc --noEmit",
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "dependencies": { "ws": "^8.18.3", "yaml": "^2.8.1" },
+  "devDependencies": { "@types/node": "^22.19.0", "@types/ws": "^8.18.1", "tsx": "^4.20.6", "typescript": "^5.9.3" }
+}
