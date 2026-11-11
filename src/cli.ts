@@ -39,7 +39,7 @@ async function initializeVault(source: string, destination: string): Promise<{ c
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: { vault: { type: 'string' }, from: { type: 'string' }, port: { type: 'string' }, help: { type: 'boolean', short: 'h' } } });
   const command = positionals[0] ?? 'help';
-  const vault = path.resolve(values.vault ?? process.env.ATLAS_VAULT ?? path.join(homedir(), '.atlas', 'vault'));
+  const vault = path.resolve(values.vault ?? process.env.ATLAS_VAULT_PATH ?? process.env.ATLAS_VAULT ?? path.join(homedir(), '.atlas', 'vault'));
   if (values.help || command === 'help') {
     console.log('Atlas · atlas-si.com\n\natlas init --from ../atlas-workforce/vault-starter [--vault path]\natlas graph [--vault path]\natlas search words [--vault path]\natlas chat [--vault path]\natlas run "@atlas-ai-native-architect task" [--vault path]\natlas daemon [--vault path] [--port 18790]\n\nRemote models require ATLAS_API_KEY + ATLAS_MODEL. A Soul and specialty must exist in the Vault.'); return;
   }
@@ -48,6 +48,11 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ vault, ...await initializeVault(path.resolve(values.from), vault) })); return;
   }
   const indexer = new VaultIndexer(vault); await indexer.initialize();
+  if (indexer.warnings.length) {
+    console.error(`Atlas Vault index is partial: ${indexer.warnings.length} warning(s).`);
+    for (const warning of indexer.warnings.slice(0, 20)) console.error(`  ${warning}`);
+    if (indexer.warnings.length > 20) console.error(`  ${indexer.warnings.length - 20} additional warnings; see authenticated GET /api/health in daemon mode.`);
+  }
   if (command === 'graph') { console.log(JSON.stringify(indexer.getGraph(), null, 2)); return; }
   if (command === 'search') { console.log(JSON.stringify(indexer.search(positionals.slice(1).join(' ')), null, 2)); return; }
   const telemetry = new Telemetry();

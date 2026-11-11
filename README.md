@@ -22,7 +22,7 @@ node dist/cli.js search architecture --vault ../atlas-vault
 node dist/cli.js daemon --vault ../atlas-vault
 ```
 
-`init` uses exclusive copies and preserves every existing file. It refuses source/destination symlinks. Omit `--vault` to use `~/.atlas/vault` or set `ATLAS_VAULT`. `npm link` optionally makes the `atlas` executable available in your shell.
+`init` uses exclusive copies and preserves every existing file. It refuses source/destination symlinks. Vault precedence is `--vault`, `ATLAS_VAULT_PATH`, legacy `ATLAS_VAULT`, then `~/.atlas/vault`. `npm link` optionally makes the `atlas` executable available in your shell.
 
 The daemon binds only `127.0.0.1:18790`. Set `ATLAS_TOKEN` to a 24+ character URL-safe secret; otherwise the CLI generates a session token and prints it once for pasting into Atlas Desktop. Keep the token out of URLs and public logs. The desktop retains it in session memory only.
 
@@ -68,13 +68,16 @@ Lexical search works without keys. Semantic search calls an explicitly configure
 
 Memory writes validate a kebab-case topic and link names, create unique dated Markdown in `memory/`, and publish through an exclusive hard link from a temporary sibling. Existing notes cannot be overwritten. Hard-link-capable filesystems (NTFS, APFS, ext4) are required for this atomic write path.
 
+Malformed notes and indexing limits make the index explicitly partial: CLI commands print warnings to stderr; `/health` reports `ready:false,indexComplete:false`; authenticated `/api/health` supplies the warning details. The strict graph payload remains unchanged and clients may still inspect the usable subset while resolving warnings.
+
 ### HTTP and WebSocket
 
 All private routes require `Authorization: Bearer <ATLAS_TOKEN>`. `/health` exposes readiness and search mode only. Host headers and browser origins are checked before authentication. Default origins include the loopback development ports 1420, 1430, 5173 and Tauri local origins; the public landing domain is not allowed to read the Vault.
 
 | Method/path | Response |
 | --- | --- |
-| `GET /health` | Readiness, authentication status and search mode |
+| `GET /health` | Readiness, index completeness, authentication status and search mode; no private warning paths |
+| `GET /api/health` | Authenticated diagnostics: `indexComplete`, `ready`, `warnings`, indexed node count |
 | `GET /api/graph` | `GraphPayload` v1 |
 | `GET /api/leads` | Graph nodes whose kind is `lead` |
 | `GET /api/search?q=...` | `{mode:'lexical',hits:[]}` |

@@ -14,6 +14,7 @@ import { startServer } from '../src/telemetry/server.js';
 import { parseMention } from '../src/openbot/gateway.js';
 import { verifyWebhook } from '../src/openbot/adapters.js';
 import { createHmac } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import type { Completion, ModelProvider, AtlasEvent } from '../src/contracts.js';
 
 async function fixture(): Promise<{ directory: string; indexer: VaultIndexer; cleanup(): Promise<void> }> {
@@ -154,4 +155,72 @@ test('HTTP/WS authenticates private Vault, rejects untrusted origins/hosts and s
     assert.equal(memory.status, 400);
     const leads = await fetch(`${base}/api/leads`, { headers: { authorization: `Bearer ${token}` } }); assert.equal((await leads.json() as unknown[]).length, 1);
   } finally { await server.close(); await f.cleanup(); }
+});
+
+test('Malformed frontmatter and file limits expose authenticated partial-index diagnostics', async () => {
+  const f = await fixture();
+  const token = 'diagnostics-test-token-24-characters', telemetry = new Telemetry();
+  const harness = new AtlasHarness(new QueueProvider([]), f.indexer, telemetry);
+  await writeFile(path.join(f.directory, 'projects/broken.md'), '---\ninvalid: [\n---\n');
+  await f.indexer.scan();
+  const server = await startServer({ token, port: 0, harness, indexer: f.indexer, telemetry });
+  try {
+    const open = await (await fetch(`http://127.0.0.1:${server.port}/health`)).json() as Record<string, unknown>;
+    assert.equal(open.indexComplete, false); assert.equal(open.ready, false); assert.equal(open.warnings, undefined);
+    assert.equal((await fetch(`http://127.0.0.1:${server.port}/api/health`)).status, 401);
+    const diagnostics = await (await fetch(`http://127.0.0.1:${server.port}/api/health`, { headers: { authorization: `Bearer ${token}` } })).json() as { ready: boolean; indexComplete: boolean; warnings: string[] };
+    assert.equal(diagnostics.ready, false); assert.equal(diagnostics.indexComplete, false);
+    assert.ok(diagnostics.warnings.some(warning => warning.includes('projects/broken.md')));
+    assert.ok(f.indexer.getGraph().nodes.length > 0, 'Usable graph subset remains available');
+    const bounded = new VaultIndexer(f.directory, 1); await bounded.initialize();
+    assert.equal(bounded.getGraph().nodes.length, 1); assert.ok(bounded.warnings.some(warning => warning.includes('limit')));
+    await bounded.close();
+  } finally { await server.close(); await f.cleanup(); }
+});
+
+test('Concurrent streamed request bodies cannot bypass the active-run limit', async () => {
+  const f = await fixture();
+  let unblock!: () => void;
+  const block = new Promise<void>(resolve => { unblock = resolve; });
+  let started!: () => void;
+  const builderStarted = new Promise<void>(resolve => { started = resolve; });
+  let modelCalls = 0;
+  const provider: ModelProvider = { async complete() {
+    modelCalls++;
+    if (modelCalls === 1) { started(); await block; return response('Reviewed result'); }
+    return response('{"approved":true,"feedback":"Meets task"}');
+  } };
+  const telemetry = new Telemetry(), token = 'concurrency-test-token-24-characters';
+  const harness = new AtlasHarness(provider, f.indexer, telemetry);
+  const server = await startServer({ harness, indexer: f.indexer, telemetry, token, port: 0, maxConcurrentRuns: 1 });
+  const begin = () => {
+    const req = httpRequest({ hostname: '127.0.0.1', port: server.port, path: '/api/run', method: 'POST', headers: {
+      authorization: `Bearer ${token}`, 'content-type': 'application/json', expect: '100-continue', 'transfer-encoding': 'chunked'
+    } });
+    const ready = new Promise<void>((resolve, reject) => { req.once('continue', resolve); req.once('error', reject); });
+    const result = new Promise<number>((resolve, reject) => { req.once('response', res => { res.resume(); res.once('end', () => resolve(res.statusCode!)); }); req.once('error', reject); });
+    void result.catch(() => undefined);
+    req.flushHeaders();
+    return { req, ready, result };
+  };
+  const first = begin(), second = begin();
+  // Both headers reach handlers before either body finishes. 100-continue is
+  // the transport handshake, so this regression needs no timing sleeps.
+  try {
+    await Promise.all([first.ready, second.ready]);
+    first.req.write('{"agentSlug":"atlas-ai-native-architect","task":');
+    second.req.write('{"agentSlug":"atlas-ai-native-architect","task":');
+    first.req.end('"first"}');
+    await builderStarted;
+    second.req.end('"second"}');
+    assert.equal(await second.result, 429);
+    assert.equal(modelCalls, 1, 'Second builder never starts while the first owns the capacity slot');
+    unblock();
+    assert.equal(await first.result, 200);
+    assert.equal(modelCalls, 2, 'Only first builder and its auditor execute');
+  } finally {
+    unblock(); first.req.destroy(); second.req.destroy();
+    await Promise.allSettled([first.ready, second.ready, first.result, second.result]);
+    await server.close(); await f.cleanup();
+  }
 });

@@ -37,8 +37,9 @@ export async function startServer(options: ServerOptions): Promise<{ port: numbe
       if (req.headers.origin) { res.setHeader('access-control-allow-origin', req.headers.origin); res.setHeader('vary', 'Origin'); }
       if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'Authorization, Content-Type' }); res.end(); return; }
       const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
-      if (req.method === 'GET' && url.pathname === '/health') { json(res, 200, { name: 'Atlas-Agent', version: 1, ready: true, authenticated: authenticated(req), searchMode: options.embeddings ? 'lexical+semantic' : 'lexical' }); return; }
+      if (req.method === 'GET' && url.pathname === '/health') { json(res, 200, { name: 'Atlas-Agent', version: 1, ready: options.indexer.warnings.length === 0, indexComplete: options.indexer.warnings.length === 0, authenticated: authenticated(req), searchMode: options.embeddings ? 'lexical+semantic' : 'lexical' }); return; }
       if (!authenticated(req)) { json(res, 401, { error: 'Bearer token required' }); return; }
+      if (req.method === 'GET' && url.pathname === '/api/health') { json(res, 200, { name: 'Atlas-Agent', version: 1, ready: options.indexer.warnings.length === 0, indexComplete: options.indexer.warnings.length === 0, warnings: [...options.indexer.warnings], nodes: options.indexer.getGraph().nodes.length }); return; }
       if (req.method === 'GET' && url.pathname === '/api/graph') { json(res, 200, options.indexer.getGraph()); return; }
       if (req.method === 'GET' && url.pathname === '/api/leads') { json(res, 200, options.indexer.getGraph().nodes.filter(node => node.kind === 'lead')); return; }
       if (req.method === 'GET' && url.pathname === '/api/search') {
@@ -54,6 +55,9 @@ export async function startServer(options: ServerOptions): Promise<{ port: numbe
         if (activeRuns >= (options.maxConcurrentRuns ?? 2)) { json(res, 429, { error: 'Runtime capacity reached' }); return; }
         const input = await body(req);
         if (typeof input.agentSlug !== 'string' || typeof input.task !== 'string') { json(res, 400, { error: 'agentSlug and task are required' }); return; }
+        // Several streamed bodies may have passed the early capacity check while
+        // awaiting their final chunk. Recheck and reserve without an await gap.
+        if (activeRuns >= (options.maxConcurrentRuns ?? 2)) { json(res, 429, { error: 'Runtime capacity reached' }); return; }
         const controller = new AbortController(); controllers.add(controller); activeRuns++;
         res.on('close', () => { if (!res.writableEnded) controller.abort(); });
         try { json(res, 200, await options.harness.run(input.agentSlug, input.task, controller.signal)); }
